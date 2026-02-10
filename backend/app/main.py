@@ -5,9 +5,9 @@ import uuid
 
 from app.content import SCENES, INITIAL_STATE
 from app.game_logic import process_move
-from app.models import PlayerState, GameRequest, GameResponce, Choice
+from app.models import PlayerState, GameRequest, GameResponse, Choice  
 
-app = FastAPI(title='Сюжетка моя' , version='1.0')
+app = FastAPI(title='Сюжетка моя', version='1.0')
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-game_session: Dict[str, Dict[str, Any]] = {}
+game_sessions: Dict[str, Dict[str, Any]] = {} 
 
 def get_condition_texts(scene: Dict[str, Any], player_state: Dict[str, Any]) -> List[str]:
     texts = []
@@ -25,43 +25,42 @@ def get_condition_texts(scene: Dict[str, Any], player_state: Dict[str, Any]) -> 
         try:
             if condition['check'](player_state):
                 texts.append(condition['text'])
-        except:
-            pass
+        except Exception as e:
+            print(f"Ошибка в условии: {e}")
     return texts
 
-@app.post('/api/game/start', response_model=GameResponce)
+@app.post('/api/game/start', response_model=GameResponse) 
 async def start_game():
     session_id = str(uuid.uuid4())
 
-    game_session[session_id] = {
+    game_sessions[session_id] = {
         'player_state': INITIAL_STATE.copy(),
         'session_id': session_id,
     }
     
-    player_state = game_session[session_id]['player_state']
+    player_state = game_sessions[session_id]['player_state']
     current_scene = SCENES[player_state['current_scene']]
 
     condition_texts = get_condition_texts(current_scene, player_state)
 
-    return GameResponce(
+    return GameResponse( 
         session_id=session_id,
-        scene_id = player_state['current_scene'],
-        text = current_scene['text'],
-        choices = [Choice(**choice) for choice in current_scene.get('choices', [])],
-        player_state = PlayerState(**player_state),
-        conditions_texts = condition_texts,
-        event_text = 'Игра началась.'
+        scene_id=player_state['current_scene'],
+        text=current_scene['text'],
+        choices=[Choice(**choice) for choice in current_scene.get('choices', [])],
+        player_state=PlayerState(**player_state),
+        condition_texts=condition_texts,
+        event_text='Игра началась.'
     )
     
-@app.post("/api/game/move", response_model=GameResponce)
+@app.post("/api/game/move", response_model=GameResponse)
 async def make_move(request: GameRequest):
-    """Сделать ход в игре"""
     session_id = request.session_id
     
-    if not session_id or session_id not in game_session:
+    if not session_id or session_id not in game_sessions:
         raise HTTPException(status_code=404, detail="Сессия не найдена")
     
-    game_data = game_session[session_id]
+    game_data = game_sessions[session_id]
     player_state = game_data['player_state']
     
     current_scene_id = player_state['current_scene']
@@ -76,55 +75,62 @@ async def make_move(request: GameRequest):
     
     choice_data = choices[request.choice_index]
     
-    new_state, event_text = process_move(player_state, choice_data, current_scene)
+    new_state, event_text, death_reason = process_move(player_state, choice_data, current_scene)
     
-    new_state['current_scene'] = choice_data['next']
-    game_session[session_id]['player_state'] = new_state
+    if death_reason:
+        death_scene_map = {
+            'hunger': 'death_hunger',
+            'time': 'death_time',
+            'depression': 'death_depression',
+            'debt': 'death_unemployed'
+        }
+        
+        next_scene_id = death_scene_map.get(death_reason, 'death_hunger')
+        event_text = "КРИТИЧЕСКОЕ СОСТОЯНИЕ!"
+        
+        death_state = {
+            'is_dirty': new_state.get('is_dirty', True),
+            'vibe': new_state.get('vibe', 0),
+            'time': new_state.get('time', 0),
+            'hungry': new_state.get('hungry', 0),
+            'money': new_state.get('money', 500),
+            'current_scene': next_scene_id
+        }
+        new_state = death_state
+    else:
+        next_scene_id = choice_data['next']
     
-    next_scene = SCENES[choice_data['next']]
+    new_state['current_scene'] = next_scene_id
+    game_sessions[session_id]['player_state'] = new_state
     
+    next_scene = SCENES[next_scene_id]
     condition_texts = get_condition_texts(next_scene, new_state)
     
-    return GameResponce(
+    return GameResponse(
         session_id=session_id,
-        scene_id=choice_data['next'],
+        scene_id=next_scene_id,
         text=next_scene['text'],
-        choices = [Choice(**choice) for choice in next_scene.get('choices', [])], 
+        choices=[Choice(**choice) for choice in next_scene.get('choices', [])],
         player_state=PlayerState(**new_state),
         condition_texts=condition_texts,
         event_text=event_text
     )
 
-@app.get("/api/game/state/{session_id}", response_model=GameResponce)
+@app.get("/api/game/state/{session_id}", response_model=GameResponse)  
 async def get_game_state(session_id: str):
-    """Получить текущее состояние игры"""
-    if session_id not in game_session:
+    if session_id not in game_sessions:
         raise HTTPException(status_code=404, detail="Сессия не найдена")
     
-    player_state = game_session[session_id]['player_state']
+    player_state = game_sessions[session_id]['player_state']
     current_scene = SCENES[player_state['current_scene']]
     
     condition_texts = get_condition_texts(current_scene, player_state)
     
-    return GameResponce(
+    return GameResponse(  
+        session_id=session_id,
         scene_id=player_state['current_scene'],
         text=current_scene['text'],
         choices=[Choice(**choice) for choice in current_scene.get('choices', [])],
         player_state=PlayerState(**player_state),
-        condition_texts=condition_texts
+        condition_texts=condition_texts  
     )
-
-@app.get("/")
-async def root():
-    return {
-        "message": "Добро пожаловать в текстовую игру API!",
-        "endpoints": {
-            "start_game": "POST /api/game/start",
-            "make_move": "POST /api/game/move",
-            "get_state": "GET /api/game/state/{session_id}"
-        }
-    }
-
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
