@@ -7,7 +7,7 @@ from app.content import SCENES, INITIAL_STATE
 from app.game_logic import process_move
 from app.models import PlayerState, GameRequest, GameResponse, Choice  
 
-app = FastAPI(title='Сюжетка моя', version='1.0')
+app = FastAPI(title='Эдик педик', version='1.0')
 
 app.add_middleware(
     CORSMiddleware,
@@ -86,7 +86,7 @@ async def make_move(request: GameRequest):
         }
         
         next_scene_id = death_scene_map.get(death_reason, 'death_hunger')
-        event_text = "КРИТИЧЕСКОЕ СОСТОЯНИЕ!"
+        event_text = "Критическое состояние!"
         
         death_state = {
             'is_dirty': new_state.get('is_dirty', True),
